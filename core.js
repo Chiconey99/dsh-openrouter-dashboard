@@ -1,5 +1,6 @@
-// Pure data helpers and a bounded, credential-safe OpenRouter reader.
+// Pure data helpers and a bounded, credential-safe provider reader.
 export const API = 'https://openrouter.ai/api/v1';
+export const MAX_METADATA_BYTES = 256000;
 export const numberOrNull = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
 export const validGenerationId = value => typeof value === 'string' && /^gen-[A-Za-z0-9_-]{1,200}$/.test(value);
 export const validSessionId = value => typeof value === 'string' && /^session-[A-Za-z0-9_-]{1,160}$/.test(value);
@@ -10,25 +11,26 @@ export function creditView(data) {
   const totalCredits = numberOrNull(data?.total_credits), totalUsage = numberOrNull(data?.total_usage);
   return { totalCredits, totalUsage, balance: totalCredits !== null && totalUsage !== null ? totalCredits - totalUsage : null };
 }
-export function safeError(error) {
-  if (error?.status === 401) return 'OpenRouter rejected this key (401). Check the credential in Settings.';
-  if (error?.status === 403) return 'OpenRouter requires a management key for account balance. Use Balance setup below.';
-  if (error?.status === 429) return 'OpenRouter rate limit reached. Retrying automatically.';
-  if (error?.status === 404) return 'This request is not yet available, or is outside OpenRouter retention.';
-  if (error?.name === 'TimeoutError' || error?.name === 'AbortError') return 'OpenRouter request timed out. Retrying automatically.';
-  return 'OpenRouter is unavailable or returned an invalid response. Retrying automatically.';
+export function safeError(error, provider = 'OpenRouter') {
+  if (error?.status === 401) return `${provider} rejected this key (401). Check the credential in Settings.`;
+  if (error?.status === 403) return provider === 'DeepSeek' ? 'DeepSeek refused this key (403). Check the credential in Settings.' : `${provider} requires a management key for account balance. Use Balance setup below.`;
+  if (error?.status === 429) return `${provider} rate limit reached. Retrying automatically.`;
+  if (error?.status === 404) return provider === 'DeepSeek' ? 'DeepSeek does not expose this endpoint on the configured base URL.' : `This request is not yet available, or is outside ${provider} retention.`;
+  if (error?.name === 'TimeoutError' || error?.name === 'AbortError') return `${provider} request timed out. Retrying automatically.`;
+  return `${provider} is unavailable or returned an invalid response. Retrying automatically.`;
 }
-export async function readOpenRouter(path, key, { fetchImpl = fetch, signal } = {}) {
+// One hardened metadata transfer shared by every provider reader: HTTPS only,
+// redirects rejected, a hard byte cap enforced while streaming, and Retry-After
+// surfaced as a delay. Callers own endpoint allowlisting and shape validation.
+export async function readMetadataData(url, key, { fetchImpl = fetch, signal } = {}) {
   if (!key) throw new Error('Missing credential');
-  if (path !== '/key' && path !== '/credits' && !/^\/generation\?id=gen-[A-Za-z0-9_-]{1,200}$/.test(path)) {
-    throw new Error('Unsupported metadata endpoint');
-  }
-  const response = await fetchImpl(API + path, {
+  if (new URL(url).protocol !== 'https:') throw new Error('Unsupported metadata endpoint');
+  const response = await fetchImpl(url, {
     headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' },
     redirect: 'error', signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10000)]) : AbortSignal.timeout(10000)
   });
   if (!response.ok) {
-    const error = new Error('OpenRouter HTTP error');
+    const error = new Error('Provider HTTP error');
     error.status = response.status;
     const retry = response.headers.get('retry-after');
     if (retry) {
@@ -49,7 +51,7 @@ export async function readOpenRouter(path, key, { fetchImpl = fetch, signal } = 
       const chunk = await reader.read();
       if (chunk.done) break;
       bytes += chunk.value.byteLength;
-      if (bytes > 256000) {
+      if (bytes > MAX_METADATA_BYTES) {
         await reader.cancel();
         throw new Error('Oversized metadata');
       }
@@ -57,15 +59,24 @@ export async function readOpenRouter(path, key, { fetchImpl = fetch, signal } = 
     }
     body += decoder.decode();
   } finally { reader.releaseLock(); }
-  const value = JSON.parse(body);
-  if (!value?.data || typeof value.data !== 'object' || Array.isArray(value.data)) throw new Error('Invalid metadata');
-  if (path === '/key' && ['usage', 'usage_daily', 'usage_weekly'].some(field => numberOrNull(value.data[field]) === null)) {
+  // Parsing only: providers disagree on their envelope (OpenRouter wraps the
+  // payload in `data`, DeepSeek returns a bare object), so each caller unwraps.
+  return JSON.parse(body);
+}
+export async function readOpenRouter(path, key, options = {}) {
+  if (path !== '/key' && path !== '/credits' && !/^\/generation\?id=gen-[A-Za-z0-9_-]{1,200}$/.test(path)) {
+    throw new Error('Unsupported metadata endpoint');
+  }
+  const body = await readMetadataData(API + path, key, options);
+  const data = body?.data;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('Invalid metadata');
+  if (path === '/key' && ['usage', 'usage_daily', 'usage_weekly'].some(field => numberOrNull(data[field]) === null)) {
     throw new Error('Invalid key usage metadata');
   }
-  if (path === '/credits' && ['total_credits', 'total_usage'].some(field => numberOrNull(value.data[field]) === null)) {
+  if (path === '/credits' && ['total_credits', 'total_usage'].some(field => numberOrNull(data[field]) === null)) {
     throw new Error('Invalid account credit metadata');
   }
-  return value.data;
+  return data;
 }
 export function requestFromEvent(event, provider = 'openrouter') {
   if (event.type !== 'assistant/message') return null;

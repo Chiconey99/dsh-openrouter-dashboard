@@ -6,11 +6,19 @@ import { resolve } from 'node:path';
 export const releaseFiles = [
   '.gitattributes', '.gitignore',
   'README.md', 'SECURITY.md', 'LICENSE', 'package.json', 'cordis.patch.yml',
-  'index.js', 'core.js', 'client.js', 'scripts/privacy-check.mjs',
-  'test/client.test.js', 'test/core.test.js', 'test/host.test.js'
+  'index.js', 'core.js', 'deepseek.js', 'client.js', 'scripts/privacy-check.mjs',
+  'test/client.test.js', 'test/core.test.js', 'test/deepseek.test.js', 'test/host.test.js'
 ];
 const root = fileURLToPath(new URL('../', import.meta.url));
-const dummyKeys = new Set(['sk-or-test-model-key-123456', 'sk-or-management-key-1234567890']);
+// Synthetic credentials the test suite may use. Both providers are covered: a
+// DeepSeek-shaped fixture is as publishable as an OpenRouter-shaped one, and
+// anything NOT listed here is treated as a live credential and fails the check.
+const fixtureKeys = new Set([
+  'sk-or-test-model-key-123456', 'sk-or-management-key-1234567890',
+  'sk-deepseek-test-key-000000', 'sk-deepseek-test-key-000001',
+  'sk-deepseek-candidate-0003', 'sk-deepseek-management-000002',
+  'sk-test-deepseek-key-000001', 'sk-test-deepseek-key-000002'
+]);
 const rules = [
   ['Windows user path', /[a-z]:[\\/]+Users[\\/]+[^\s"'`<>\\/]+/ig],
   ['POSIX user path', /\/(?:home|Users)\/[^\s"'`<>/]+/g],
@@ -32,8 +40,10 @@ for (const file of releaseFiles) {
     pattern.lastIndex = 0;
     if (pattern.test(text)) report(file, label);
   }
-  const keyPattern = /\bsk-or-[A-Za-z0-9_-]{12,}\b/g;
-  for (const match of text.matchAll(keyPattern)) if (!dummyKeys.has(match[0])) report(file, 'Non-fixture OpenRouter key');
+  // Match a provider key with or without the `or`/`deepseek` infix, so a live key
+  // of either shape is caught regardless of which vendor minted it.
+  const keyPattern = /\bsk-(?:or-|deepseek-)?[A-Za-z0-9_-]{12,}\b/g;
+  for (const match of text.matchAll(keyPattern)) if (!fixtureKeys.has(match[0])) report(file, 'Non-fixture API key');
   // The publisher may supply local identity terms in memory; they are never
   // embedded in this repository or printed in the report.
   for (const term of (process.env.PRIVACY_TERMS || '').split('|').filter(Boolean)) {

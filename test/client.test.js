@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 const source=readFileSync(new URL('../client.js',import.meta.url),'utf8');
-function render(period='Day',data=null,current='session-a',wide=true) {
+function render(period='Day',data=null,current='session-a',wide=true,provider='openrouter') {
  let panel, slot, module; const states=[],saved=[];
  const h=(type,props,...children)=>({type,props:props||{},children});
- const React={createElement:h,Fragment:'fragment',useState(init){const i=states.length;const v=i===0?period:i===1?data:typeof init==='function'?init():init;states.push(v);return[v,next=>{states[i]=typeof next==='function'?next(states[i]):next}];},useEffect(){},useRef(init){return{current:init}},useId(){return 'usage-test'}};
- vm.runInNewContext(source,{window:{__ModuleLoader__:{load(value){module=value}}},localStorage:{getItem:()=>period,setItem:(...x)=>saved.push(x)},Intl,console});
+ // Hook order: provider, period, then data — keep it in step with the panel.
+ const React={createElement:h,Fragment:'fragment',useState(init){const i=states.length;const v=i===0?provider:i===1?period:i===2?data:typeof init==='function'?init():init;states.push(v);return[v,next=>{states[i]=typeof next==='function'?next(states[i]):next}];},useEffect(){},useRef(init){return{current:init}},useId(){return 'usage-test'}};
+ vm.runInNewContext(source,{window:{__ModuleLoader__:{load(value){module=value}}},localStorage:{getItem:key=>key==='or-usage-provider'?provider:period,setItem:(...x)=>saved.push(x)},Intl,console});
  const plugin=module.factory(name=>{assert.equal(name,'react');return React});
  plugin.apply({slots:{inject(name,fn){fn()},register(info,component){slot=info;panel=component}}});
  const tree=panel({wide,useSessions:selector=>selector({current})});
@@ -15,28 +16,42 @@ function render(period='Day',data=null,current='session-a',wide=true) {
 }
 function walk(tree){if(!tree||typeof tree!=='object')return[];if(Array.isArray(tree))return tree.flatMap(walk);return[tree,...tree.children.flatMap(walk)]}
 const data={key:{usageDaily:.08,usageWeekly:.8,usageTotal:2,limit:null,limitRemaining:null,updatedAt:'2026-09-15T10:00:00Z',error:null},credits:{balance:17,totalCredits:20,totalUsage:3,updatedAt:'2026-09-15T10:00:00Z',error:null},session:{cost:.04,priced:1,requests:2,pending:1,missing:0,models:[{model:'example/model',cost:.04,requests:1}],error:null}};
+// DeepSeek's payload carries an estimate plus the exact provider balance, and no
+// key/credits fields at all — the panel must not require what the provider lacks.
+const deepseekData={updatedAt:'2026-09-15T10:00:00Z',keyConfigured:true,provider:'deepseek-official',
+ balance:{isAvailable:true,currency:'USD',balance:12.34,granted:1.5,toppedUp:10.84,infos:[{currency:'USD',balance:12.34}],error:null,updatedAt:'2026-09-15T10:00:00Z'},
+ session:{id:null,cost:null,requests:0,priced:0,pending:0,missing:0,models:[],error:null},
+ deepseek:{id:'session-a',period:'Session',scope:'Session + other sessions in this ledger',cost:1.23,calls:4,pricedCalls:4,unattributedCalls:0,tokens:{input:1000000,output:500000,cacheRead:200000,cacheWrite:0},accountTokens:{input:1000000,output:500000,cacheRead:200000,cacheWrite:0},unattributedTokens:0,truncated:false,models:[{model:'deepseek-flash',cost:.83,calls:3,tokens:1200000,priced:true},{model:'deepseek-v4-pro',cost:.4,calls:1,tokens:500000,priced:true}],error:null}};
 test('client registers the sidebar slot and exposes all period choices',()=>{
  const result=render('Day',data);assert.equal(result.slot.id,'openrouter-usage');
- const elements=walk(result.tree),select=elements.find(e=>e.type==='select');
+ const elements=walk(result.tree),select=elements.find(e=>e.props['aria-label']==='Usage period');
  assert.deepEqual(Array.from(walk(select).filter(e=>e.type==='option').map(e=>e.props.value)),['Session','Day','Week','Total']);
- select.props.onChange({target:{value:'Week'}});assert.equal(result.states[0],'Week');assert.deepEqual(result.saved,[['or-usage-period','Week']]);
+ select.props.onChange({target:{value:'Week'}});assert.equal(result.states[1],'Week');assert.deepEqual(result.saved,[['or-usage-period','Week']]);
 });
+// Structural check that ignores the CSS text node carrying the same class names.
+const hasClass=(tree,name)=>walk(tree).some(node=>(typeof node.type==='string')&&node.props&&node.props.className===name);
 test('session shows partial coverage and only its actual model breakdown',()=>{
- const session=JSON.stringify(render('Session',data).tree), day=JSON.stringify(render('Day',data).tree);
- assert.match(session,/partial/);assert.match(session,/example\/model/);assert.ok(!day.includes('example/model'));assert.match(day,/\$17\.00/);
+ const sessionTree=render('Session',data).tree, dayTree=render('Day',data).tree;
+ assert.match(JSON.stringify(sessionTree),/partial/);assert.match(JSON.stringify(sessionTree),/example\/model/);
+ // Day carries no per-model attribution, so no model row may be rendered there.
+ assert.ok(hasClass(sessionTree,'or-model'),'Session shows model rows');
+ assert.ok(!hasClass(dayTree,'or-model'),'no model rows outside Session');
+ assert.ok(!hasClass(dayTree,'or-bar'));
+ assert.match(JSON.stringify(dayTree),/\$17\.00/);
 });
 test('home and narrow sidebar remain usable without session data',()=>{
  assert.match(JSON.stringify(render('Session',null,null).tree),/Open a session/);
  const elements=walk(render('Day',data,'session-a',false).tree);
- assert.ok(elements.some(e=>e.props['aria-label']==='OpenRouter usage'));
+ assert.ok(elements.some(e=>e.props['aria-label']==='OpenRouter usage and balance'));
 });
 
 const text=tree=>tree==null?'':Array.isArray(tree)?tree.map(text).join(' '):typeof tree==='object'?text(tree.children):String(tree);
 // Small hook/effect runner: commits dependency changes, cleanup, fake timers and
 // deferred fetches. No React/DOM dependency, and no real network or credentials.
-function harness({wide=true,current='session-a',ignoreAbort=false}={}) {
+function harness({wide=true,current='session-a',ignoreAbort=false,deepseek=false,override=null}={}) {
  let panel,module,tree,index=0,dirty=true,alive=true,now=0,nextTimer=0,focused=null,afterUnmount=0;
  const hooks=[],pending=[],timers=new Map(),listeners=new Map(),requests=[],saved=[],logs=[];
+ const answer=deepseek?{...deepseekData,...override}:data;
  const h=(type,props,...children)=>({type,props:props||{},children});
  const React={createElement:h,Fragment:'fragment',
   useState(init){const i=index++;if(!hooks[i])hooks[i]={value:typeof init==='function'?init():init};return[hooks[i].value,next=>{if(!alive)afterUnmount++;const value=typeof next==='function'?next(hooks[i].value):next;if(!Object.is(value,hooks[i].value)){hooks[i].value=value;dirty=true;}}];},
@@ -46,10 +61,10 @@ function harness({wide=true,current='session-a',ignoreAbort=false}={}) {
  };
  const document={hidden:false,addEventListener(name,fn){if(!listeners.has(name))listeners.set(name,new Set());listeners.get(name).add(fn);},removeEventListener(name,fn){listeners.get(name)?.delete(fn);}};
  const fetch=(url,options)=>new Promise((resolve,reject)=>{
-  const request={url,options,resolve(value=data,ok=true){resolve({ok,json:async()=>value});},reject};requests.push(request);
+  const request={url,options,resolve(value=answer,ok=true){resolve({ok,json:async()=>value});},reject};requests.push(request);
   if(!ignoreAbort)options.signal.addEventListener('abort',()=>reject(Object.assign(new Error('aborted'),{name:'AbortError'})),{once:true});
  });
- vm.runInNewContext(source,{window:{__ModuleLoader__:{load(value){module=value}}},localStorage:{getItem:()=>null,setItem:(...args)=>saved.push(args)},Intl,AbortController,document,fetch,console:{log:(...args)=>logs.push(args),error:(...args)=>logs.push(args)},setTimeout(fn,ms){const id=++nextTimer;timers.set(id,{fn,at:now+ms});return id;},clearTimeout(id){timers.delete(id);}});
+ vm.runInNewContext(source,{window:{__ModuleLoader__:{load(value){module=value}}},localStorage:{getItem:key=>key==='or-usage-provider'?(deepseek?'deepseek':'openrouter'):null,setItem:(...args)=>saved.push(args)},Intl,AbortController,document,fetch,console:{log:(...args)=>logs.push(args),error:(...args)=>logs.push(args)},setTimeout(fn,ms){const id=++nextTimer;timers.set(id,{fn,at:now+ms});return id;},clearTimeout(id){timers.delete(id);}});
  module.factory(()=>React).apply({slots:{inject(name,fn){fn()},register(info,component){panel=component}}});
  function render(commit=true){index=0;dirty=false;tree=panel({wide,useSessions:selector=>selector({current})});if(commit)commitEffects();return tree;}
  function commitEffects(){for(const node of walk(tree)){if(node.props.ref&&!node.props.ref.current)node.props.ref.current={focus(){focused=node.props['aria-label'];}};}while(pending.length)pending.shift()();}
@@ -178,16 +193,16 @@ test('save errors never echo a server or transport credential',async()=>{
 });
 
 test('collapsed popover focuses close, handles Escape and returns trigger focus',async()=>{
- const app=await loaded({wide:false});const trigger=app.find('OpenRouter usage');
- assert.equal(trigger.props['aria-haspopup'],'dialog');app.click('OpenRouter usage');await app.flush();
+ const app=await loaded({wide:false});const trigger=app.find('OpenRouter usage and balance');
+ assert.equal(trigger.props['aria-haspopup'],'dialog');app.click('OpenRouter usage and balance');await app.flush();
  assert.equal(app.focused,'Close OpenRouter usage');
  const dialog=walk(app.tree).find(node=>node.props.role==='dialog');
- assert.equal(app.find('OpenRouter usage').props['aria-controls'],dialog.props.id);
+ assert.equal(app.find('OpenRouter usage and balance').props['aria-controls'],dialog.props.id);
  const request=await startSave(app);let prevented=false,stopped=false;
  dialog.props.onKeyDown({key:'Escape',preventDefault(){prevented=true;},stopPropagation(){stopped=true;}});await app.flush();
- assert.equal(prevented,true);assert.equal(stopped,true);assert.equal(app.focused,'OpenRouter usage');
+ assert.equal(prevented,true);assert.equal(stopped,true);assert.equal(app.focused,'OpenRouter usage and balance');
  assert.equal(request.options.signal.aborted,true);assert.ok(!walk(app.tree).some(node=>node.props.role==='dialog'));
- app.click('OpenRouter usage');await app.flush();app.button('Set up account balance');await app.flush();
+ app.click('OpenRouter usage and balance');await app.flush();app.button('Set up account balance');await app.flush();
  assert.equal(app.find('OpenRouter management key').props.value,'');
  const nextDialog=walk(app.tree).find(node=>node.props.role==='dialog');
  nextDialog.props.onBlur({currentTarget:{contains:()=>false},relatedTarget:{}});await app.flush();
@@ -201,5 +216,137 @@ test('closing details clears key and cancels save; card height remains bounded',
  assert.equal(app.find('OpenRouter management key').props.value,'');
  assert.match(source,/max-height:min\(50vh,480px\);overflow:auto/);
  assert.match(source,/\.or-detail a\{color:inherit;text-decoration:underline/);
+ app.unmount();
+});
+
+// --- DeepSeek provider -----------------------------------------------------
+
+test('the provider dropdown offers both providers and defaults to OpenRouter',()=>{
+ const elements=walk(render('Day',data).tree),select=elements.find(e=>e.props['aria-label']==='Usage provider');
+ assert.ok(select,'the provider dropdown is present');
+ assert.deepEqual(Array.from(walk(select).filter(e=>e.type==='option').map(e=>e.props.value)),['openrouter','deepseek']);
+ assert.equal(select.props.value,'openrouter');
+});
+
+test('the provider dropdown lists DeepSeek and switches without offering Total',async()=>{
+ const app=await loaded();const select=()=>app.find('Usage provider');
+ assert.equal(select().props.value,'openrouter');
+ select().props.onChange({target:{value:'deepseek'}});await app.flush();
+ // The request names the DeepSeek view, so the host answers with the DeepSeek shape.
+ assert.match(app.requests.at(-1).url,/deepseek=1/);
+ assert.match(app.requests.at(-1).url,/period=Day/);
+ assert.equal(select().props.value,'deepseek');
+ assert.ok(app.saved.some(entry=>entry[0]==='or-usage-provider'&&entry[1]==='deepseek'));
+ const periods=walk(app.find('Usage period')).filter(e=>e.type==='option').map(e=>e.props.value);
+ assert.deepEqual(periods,['Session','Day','Week'],'DeepSeek has no provider-reported Total');
+ app.unmount();
+});
+
+test('selecting DeepSeek while Total is remembered falls back to a scope it can answer',async()=>{
+ const app=harness();// period starts unset, so switch it to Total first
+ app.find('Usage period').props.onChange({target:{value:'Total'}});await app.flush();
+ assert.equal(app.find('Usage period').props.value,'Total');
+ app.find('Usage provider').props.onChange({target:{value:'deepseek'}});await app.flush();
+ assert.equal(app.find('Usage period').props.value,'Day');
+ assert.ok(app.saved.some(entry=>entry[0]==='or-usage-period'&&entry[1]==='Day'));
+ assert.match(app.requests.at(-1).url,/period=Day/);
+ app.unmount();
+});
+
+test('the DeepSeek view renders its own estimate, balance and per-model bars',async()=>{
+ const app=await loaded({deepseek:true});
+ // Model attribution is a Session-scope figure, so select Session to see the bars.
+ app.find('Usage period').props.onChange({target:{value:'Session'}});await app.flush();
+ app.requests.at(-1).resolve();await app.flush();
+ const rendered=text(app.tree);
+ assert.match(rendered,/DeepSeek/);
+ assert.match(rendered,/\$1\.23/,'the estimated spend is the headline figure');
+ assert.match(rendered,/\$12\.34/,'the provider balance is shown');
+ assert.match(rendered,/deepseek-flash/);assert.match(rendered,/deepseek-v4-pro/);
+ assert.match(rendered,/1\.7M tokens recorded/);
+ assert.match(rendered,/This session · locally estimated/);
+ // OpenRouter-only fields must not appear in the DeepSeek view.
+ assert.doesNotMatch(rendered,/Key total spend/);
+ assert.doesNotMatch(rendered,/Account credits purchased/);
+ assert.ok(!walk(app.tree).some(node=>node.type==='button'&&text(node)==='Set up account balance'));
+ app.unmount();
+});
+
+test('the DeepSeek config menu explains the integration and saves a key',async()=>{
+ const app=await loaded({deepseek:true});
+ const details=()=>walk(app.tree).find(node=>node.type==='details');
+ assert.match(text(walk(details()).find(node=>node.type==='summary')),/DeepSeek API setup/);
+ details().props.onToggle({currentTarget:{open:true}});await app.flush();
+ const rendered=text(app.tree);
+ assert.match(rendered,/estimated locally/);
+ assert.match(rendered,/not a billing record/);
+ assert.match(rendered,/Model route deepseek-official/);
+ assert.match(rendered,/01:00–04:00/);
+ assert.match(rendered,/Credential configured/);
+ app.button('Update DeepSeek key');await app.flush();
+ app.find('DeepSeek API key').props.onChange({target:{value:'sk-test-deepseek-key-000001'}});await app.flush();
+ walk(app.tree).find(node=>node.type==='form').props.onSubmit({preventDefault(){}});await app.flush();
+ const request=app.requests.findLast(r=>r.options.method==='POST');
+ assert.match(request.url,/\/api\/openrouter-usage\/deepseek-key$/);
+ assert.equal(JSON.parse(request.options.body).key,'sk-test-deepseek-key-000001');
+ request.resolve({ok:true});await app.flush();
+ assert.match(text(app.tree),/Saved securely/);
+ assert.equal(app.find('DeepSeek API key').props.value,'');
+ assert.deepEqual(app.saved.filter(entry=>entry[1]==='sk-test-deepseek-key-000001'),[]);
+ app.unmount();
+});
+
+test('a DeepSeek key error never echoes the submitted credential',async()=>{
+ const app=await loaded({deepseek:true});
+ walk(app.tree).find(node=>node.type==='details').props.onToggle({currentTarget:{open:true}});await app.flush();
+ app.button('Update DeepSeek key');await app.flush();
+ app.find('DeepSeek API key').props.onChange({target:{value:'sk-test-deepseek-key-000002'}});await app.flush();
+ walk(app.tree).find(node=>node.type==='form').props.onSubmit({preventDefault(){}});await app.flush();
+ const request=app.requests.findLast(r=>r.options.method==='POST');
+ request.resolve({error:'sk-test-deepseek-key-000002'},false);await app.flush();
+ assert.match(text(app.tree),/Could not save the DeepSeek key/);
+ assert.doesNotMatch(text(app.tree),/sk-test-deepseek-key-000002/);
+ assert.deepEqual(app.logs,[]);
+ app.unmount();
+});
+
+test('a DeepSeek response without its ledger is treated as a failed refresh',async()=>{
+ const app=await loaded({deepseek:true});
+ app.click('Refresh DeepSeek usage');await app.flush();
+ // Drop the ledger: the panel must refuse a partial body rather than show blanks.
+ app.requests.at(-1).resolve({balance:deepseekData.balance,session:deepseekData.session});
+ await app.flush();
+ assert.match(text(app.tree),/Cannot refresh usage/);
+ app.unmount();
+});
+
+test('switching to DeepSeek replaces stale OpenRouter figures rather than mixing them',async()=>{
+ const app=await loaded();
+ assert.match(text(app.tree),/\$17\.00/);
+ app.find('Usage provider').props.onChange({target:{value:'deepseek'}});await app.flush();
+ // The DeepSeek response has not arrived yet, so no OpenRouter figure may linger: the
+ // panel must never label an OpenRouter number as DeepSeek spend.
+ const pending=text(app.tree);
+ assert.match(pending,/DeepSeek/);
+ assert.doesNotMatch(pending,/\$17\.00/,'the OpenRouter balance is not carried into DeepSeek');
+ assert.doesNotMatch(pending,/Key total spend/);
+ assert.doesNotMatch(pending,/Account credits purchased/);
+ app.requests.at(-1).resolve({...deepseekData});await app.flush();
+ const rendered=text(app.tree);
+ assert.match(rendered,/\$12\.34/);
+ assert.match(rendered,/\$1\.23/);
+ assert.doesNotMatch(rendered,/\$17\.00/);
+ app.unmount();
+});
+
+test('an unconfigured DeepSeek key is reported plainly in the config menu',async()=>{
+ const app=await loaded({deepseek:true,override:{
+  keyConfigured:false,
+  balance:{isAvailable:false,currency:'USD',balance:null,granted:null,toppedUp:null,infos:[],error:'No DeepSeek API key configured. Add it in Settings, or set one up below.',updatedAt:'2026-09-15T10:00:00Z'}}});
+ assert.match(text(app.tree),/No DeepSeek API key configured/);
+ walk(app.tree).find(node=>node.type==='details').props.onToggle({currentTarget:{open:true}});await app.flush();
+ assert.match(text(app.tree),/Credential not configured/);
+ assert.ok(walk(app.tree).some(node=>node.type==='button'&&text(node)==='Set up DeepSeek key'));
+ assert.match(text(app.tree),/No DeepSeek API key configured/);
  app.unmount();
 });

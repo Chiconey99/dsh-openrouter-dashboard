@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { numberOrNull, validGenerationId, validSessionId, keyView, creditView, safeError, readOpenRouter, requestFromEvent, summarizeSession } from './core.js';
+import { PROVIDER as DEEPSEEK_PROVIDER, KEY_REF as DEEPSEEK_KEY_REF, BASE_URL as DEEPSEEK_BASE_URL, readDeepSeek, usageEntry, summarizeUsage, balanceView, periodStart } from './deepseek.js';
 
 export const name = 'openrouter-dashboard';
 export const inject = ['connection', 'credentials', 'sessions'];
@@ -10,13 +11,20 @@ export function apply(ctx, config = {}) {
   const provider = config.provider || 'openrouter';
   const keyRef = config.apiKeyRef || 'OPENROUTER_API_KEY';
   const managementRef = config.managementKeyRef || 'OPENROUTER_MANAGEMENT_KEY';
+  const deepseekKeyRef = config.deepseekKeyRef || DEEPSEEK_KEY_REF;
+  const deepseekBaseUrl = config.deepseekBaseUrl || DEEPSEEK_BASE_URL;
   const cachePath = config.cachePath || fileURLToPath(new URL('./.data/charges.json', import.meta.url));
   const MAX_BYTES = 16 * 1024 * 1024, MAX_COSTS = 10000, MAX_REQUESTS = 20000, MAX_SESSIONS = 1000;
+  // DeepSeek spend is reconstructed from recorded token counts, so its ledger needs
+  // its own bounds: a Map keyed by `sessionId:seq` makes rescanning idempotent.
+  const MAX_USAGE = 20000;
   const costs = new Map(), sessions = new Map(), attempts = new Map(), inFlight = new Map(), work = new Set();
+  const deepseek = new Map();
   const controller = new AbortController();
   let credentialController = new AbortController(), epoch = 0, identity = '';
   let stopped = false, writes = null, dirty = false, persistError = false, foreignCache = false;
   let requestCount = 0, activeScans = 0, pricingAfter = 0, cache = null, refresh = null, keyAfter = 0, creditsAfter = 0;
+  let deepseekCache = null, deepseekAfter = 0, deepseekRefresh = null, deepseekLimitHit = false;
   const abortError = () => new DOMException('Operation cancelled', 'AbortError');
   const modelName = value => typeof value === 'string' ? value.slice(0, 256) : 'Unknown model';
   function track(promise) {
@@ -63,11 +71,25 @@ export function apply(ctx, config = {}) {
       state.requests.set(id, {id, model:modelName(model)}); requestCount++; dirty = true;
     }
   }
+  // DeepSeek carries no provider request ids, so its usage rows are keyed by the
+  // call instead: `${sessionId}:${seq}` from a session scan, or `live-${millis}`
+  // from an observed stream. Both keys describe distinct spend, and a rescan
+  // overwrites its own durable key rather than double-counting it. The model is
+  // resolved by the caller (stream options or the preceding `request/header`).
+  function rememberUsage(sessionId, key, time, model, usage) {
+    if (!validSessionId(sessionId) || (typeof key !== 'string' && !Number.isSafeInteger(key))) return;
+    const entry = usageEntry(time, model, usage);
+    if (!entry) return;
+    const id = sessionId + '#' + key;
+    if (!deepseek.has(id) && deepseek.size >= MAX_USAGE) { deepseek.delete(deepseek.keys().next().value); deepseekLimitHit = true; }
+    deepseek.set(id, entry);
+    dirty = true;
+  }
+  const deepseekRows = () => [...deepseek.values()];
   const ready = (async () => {
     let handle;
     try {
-      handle = await open(cachePath, 'r');
-      if ((await handle.stat()).size > MAX_BYTES) throw new Error('Oversized cache');
+      handle = await open(cachePath, 'r');      if ((await handle.stat()).size > MAX_BYTES) throw new Error('Oversized cache');
       // A bounded read also protects against a file growing after stat().
       const buffer = Buffer.alloc(MAX_BYTES + 1);
       let length = 0;
@@ -94,6 +116,14 @@ export function apply(ctx, config = {}) {
       for (const row of data.sessions || []) if (row && validSessionId(row.id) && Array.isArray(row.requests)) {
         for (const entry of row.requests) if (entry && typeof entry.model === 'string') remember(row.id, entry.id, entry.model);
       }
+      // DeepSeek token history is optional in the same v1 file: a cache written by
+      // an earlier version simply has none, and unknown extra fields stay ignored.
+      if (data.deepseek !== undefined && !Array.isArray(data.deepseek)) throw new Error('Invalid DeepSeek ledger');
+      if ((data.deepseek?.length || 0) > MAX_USAGE) throw new Error('Oversized DeepSeek ledger');
+      for (const row of data.deepseek || []) {
+        if (!row || typeof row.id !== 'string' || !validSessionId(row.session)) continue;
+        rememberUsage(row.session, row.id, row.time, typeof row.model === 'string' ? row.model : null, row);
+      }
       dirty = false;
     } catch (error) {
       if (error.code !== 'ENOENT') { persistError = true; ctx.logger.warn('OpenRouter charge cache could not be read; session history will be used to recover.'); }
@@ -110,7 +140,7 @@ export function apply(ctx, config = {}) {
         try {
           // Only owned leaves are serialized. Unique temporary files prevent
           // rename collisions, but do not implement cross-process cache merging.
-          const payload = JSON.stringify({version:1, provider, costs:[...costs].map(([id,value]) => ({id,...value})), sessions:[...sessions].map(([id,value]) => ({id,requests:[...value.requests.values()]}))});
+          const payload = JSON.stringify({version:1, provider, costs:[...costs].map(([id,value]) => ({id,...value})), sessions:[...sessions].map(([id,value]) => ({id,requests:[...value.requests.values()]})), deepseek:[...deepseek].map(([id,row]) => ({session:id.slice(0, id.lastIndexOf('#')), id:id.slice(id.lastIndexOf('#') + 1), ...row}))});
           if (Buffer.byteLength(payload) > MAX_BYTES) throw new Error('Cache limit');
           await mkdir(dirname(cachePath), {recursive:true});
           temp = cachePath + '.' + randomUUID() + '.tmp';
@@ -149,6 +179,11 @@ export function apply(ctx, config = {}) {
           check(scanSignal);
           const inherited = live ? live.inheritedEventCount : handle.inheritedEventCount;
           let from = Math.max(state.cursor, Number.isSafeInteger(inherited) && inherited >= 0 ? inherited : 0);
+          // A DeepSeek usage sample carries no model, so the scan resolves it from the
+          // preceding `request/header` while walking forward. A sample encountered
+          // before any header (or after a series boundary) stays unattributed rather
+          // than borrowing a model, and its tokens are still counted exactly once.
+          let currentModel = null;
           for (let page = 0; page < 16; page++) {
             check(scanSignal);
             const events = live ? live.snapshotEvents(from, from + 256).slice(0, 256) : (await handle.read(from, 256, {signal:scanSignal})).events;
@@ -157,6 +192,23 @@ export function apply(ctx, config = {}) {
             let next = from;
             for (const event of events) {
               if (!Number.isSafeInteger(event?.seq) || event.seq < from) continue;
+              // A `request/header` states the route for the step that follows it, so it
+              // applies to later samples. A series boundary only marks where an earlier
+              // series ended; clearing the model there would misattribute the samples
+              // that come after it, so the last known route carries forward instead.
+              if (event.type === 'request/header') {
+                const config = event.data?.header?.config;
+                currentModel = config?.provider === DEEPSEEK_PROVIDER ? (typeof config.model === 'string' ? config.model : null) : null;
+              } else if (event.type === 'assistant/message' && event.data?.usage) {
+                // `source.provider` is authoritative only when present, so a sample
+                // whose source omits it is still recorded: the preceding DeepSeek
+                // header is what makes it DeepSeek usage, and a sample with no header
+                // stays unattributed rather than being silently dropped.
+                const source = event.data.message?.source;
+                if (source?.provider === undefined || source.provider === DEEPSEEK_PROVIDER) {
+                  rememberUsage(sessionId, event.seq, event.time, currentModel ?? (typeof source?.model === 'string' ? source.model : null), event.data.usage);
+                }
+              }
               const request = requestFromEvent(event, provider);
               if (request) {
                 if (request.id) remember(sessionId, request.id, request.model);
@@ -178,40 +230,60 @@ export function apply(ctx, config = {}) {
     }
     return join(state.scan, signal);
   }
+  // One `llm/stream` tap serves both providers. OpenRouter identifies a request
+  // through `replayState.response.responseId`, which only the pi-ai adapter emits;
+  // DeepSeek reports no request id and instead supplies normalized token usage on a
+  // trailing `usage` chunk, so its spend is recorded from resolved token counts.
   ctx.on('llm/stream', (options, next) => {
     const stream = next();
-    if (options.provider !== provider || !validSessionId(options.sessionId)) return stream;
+    const isOpenRouter = options.provider === provider, isDeepSeek = options.provider === DEEPSEEK_PROVIDER;
+    if ((!isOpenRouter && !isDeepSeek) || !validSessionId(options.sessionId)) return stream;
     const sessionId = options.sessionId, model = modelName(options.model);
+    // A stream chunk carries no sequence number or timestamp, so a live DeepSeek
+    // capture is keyed by the observed call instead. The subsequent session scan
+    // records the same call under its durable `session:seq` key; the two keys
+    // simply describe the same spend, which keeps every figure a sum of distinct rows.
+    const record = (id, time, usage) => {
+      if (isDeepSeek) { void track(ready.then(() => { rememberUsage(sessionId, id, time, model, usage); return save(); })).catch(() => {}); return; }
+      if (!validGenerationId(id)) return;
+      // A finish already observed before disposal must survive cache init.
+      void track(ready.then(() => { remember(sessionId, id, model); return save(); })).catch(() => {});
+    };
     return (async function* () {
+      const captured = Date.now();
+      let usage = null, finished = null;
       for await (const chunk of stream) {
-        if (chunk.type === 'finish' && !stopped) {
-          const id = chunk.replayState?.response?.responseId;
-          if (validGenerationId(id)) {
-            // A finish already observed before disposal must survive cache init.
-            void track(ready.then(() => { remember(sessionId, id, model); return save(); })).catch(() => {});
-          }
+        if (!stopped) {
+          if (isDeepSeek) {
+            // usage precedes finish, but commit only once the stream ends so an
+            // interrupted stream never records tokens the provider never resolved.
+            if (chunk.type === 'usage' && chunk.usage) usage = chunk.usage;
+          } else if (chunk.type === 'finish') finished = chunk;
         }
         yield chunk;
       }
+      if (isDeepSeek) { if (usage) record('live-' + captured, captured, usage); }
+      else if (finished) record(finished.replayState?.response?.responseId);
     })();
   }, {global:true});
   function clearCache() {
     epoch++; credentialController.abort(); credentialController = new AbortController();
     cache = null; identity = ''; keyAfter = creditsAfter = pricingAfter = 0; attempts.clear(); refresh = null;
+    deepseekCache = null; deepseekAfter = 0; deepseekRefresh = null;
   }
   ctx.on('credentials/reference-updated', clearCache);
   ctx.on('credentials/record-updated', clearCache);
   async function credentials(signal) {
     check(signal);
     const before = epoch;
-    const [key, managementResult] = await wait(Promise.all([apiKey(), ctx.credentials.resolve(managementRef)]), signal);
+    const [key, managementResult, deepseekResult] = await wait(Promise.all([apiKey(), ctx.credentials.resolve(managementRef), ctx.credentials.resolve(deepseekKeyRef)]), signal);
     check(signal);
     if (epoch !== before) throw abortError();
-    const management = managementResult?.value;
-    const nextIdentity = createHash('sha256').update((key || '') + '\0' + (management || '')).digest('hex');
+    const management = managementResult?.value, deepseekKey = deepseekResult?.value;
+    const nextIdentity = createHash('sha256').update((key || '') + '\0' + (management || '') + '\0' + (deepseekKey || '')).digest('hex');
     if (identity && identity !== nextIdentity) clearCache();
     identity = nextIdentity;
-    return {key, management, epoch, signal:AbortSignal.any([signal, credentialController.signal])};
+    return {key, management, deepseekKey, epoch, signal:AbortSignal.any([signal, credentialController.signal])};
   }
   function current(snapshot) { check(snapshot.signal); if (snapshot.epoch !== epoch) throw abortError(); }
   const retryDelay = (error, fallback) => Math.max(fallback, Number.isFinite(error?.retryAfterMs) && error.retryAfterMs > 0 ? error.retryAfterMs : 0);
@@ -252,6 +324,79 @@ export function apply(ctx, config = {}) {
     }
     current(snapshot);
     return cache;
+  }
+  // DeepSeek exposes a single balance endpoint, so this mirrors the OpenRouter
+  // refresh contract (stale-value retention, Retry-After, epoch fencing) with one field.
+  async function deepseekAccount(snapshot) {
+    current(snapshot);
+    if (deepseekRefresh?.controller.signal.aborted) throw abortError();
+    if (!deepseekCache || Date.now() >= deepseekAfter) {
+      if (!deepseekRefresh) {
+        const previous = deepseekCache, attemptEpoch = epoch;
+        const job = task(async signal => {
+          check(signal);
+          const now = new Date().toISOString();
+          const data = {updatedAt:now, keyConfigured:Boolean(snapshot.deepseekKey), balance:previous?.balance || {...balanceView(null),error:null,updatedAt:null}};
+          async function update() {
+            try {
+              const view = await readDeepSeek(deepseekBaseUrl, snapshot.deepseekKey, {signal});
+              check(signal);
+              data.balance = {...view,error:null,updatedAt:now};
+              return Date.now() + 25000;
+            } catch (error) {
+              check(signal);
+              data.balance = {...data.balance,error:snapshot.deepseekKey ? safeError(error,'DeepSeek') : 'No DeepSeek API key configured. Add it in Settings, or set one up below.'};
+              return Date.now() + retryDelay(error, 25000);
+            }
+          }
+          const next = await update();
+          check(signal);
+          if (attemptEpoch !== epoch) throw abortError();
+          deepseekCache = data; deepseekAfter = next;
+        }, AbortSignal.any([controller.signal, credentialController.signal]));
+        deepseekRefresh = job;
+        job.promise.then(() => { if (deepseekRefresh === job) deepseekRefresh = null; }, () => { if (deepseekRefresh === job) deepseekRefresh = null; });
+      }
+      await join(deepseekRefresh, snapshot.signal);
+    }
+    current(snapshot);
+    return deepseekCache;
+  }
+  // DeepSeek publishes no usage history, so every spend figure below is a local
+  // estimate over recorded token counts, scoped by the same period names the
+  // OpenRouter card uses. Day and Week are bounded by the caller's clock.
+  function deepseekScope(period, now) {
+    const start = period === 'Day' || period === 'Week' ? periodStart(period, now) : null;
+    if (start === null) return deepseekRows();
+    return deepseekRows().filter(row => Number.isFinite(row.time) && row.time >= start);
+  }
+  // The account-level view has no session to scope to, so it always reports the
+  // whole recorded ledger; `period` still narrows an explicitly requested scope.
+  function deepseekSummary(id, period, error) {
+    const rows = deepseekRows();
+    const unattributedTokens = row => row.model ? 0 : row.inputTokens + row.outputTokens + row.cacheReadTokens + row.cacheWriteTokens;
+    const unattributedCalls = rows.reduce((sum, row) => sum + (row.model ? 0 : 1), 0);
+    if (!id) {
+      const totals = summarizeUsage(period ? deepseekScope(period, Date.now()) : rows);
+      return {
+        id: null, period: period || null, scope: 'All recorded sessions',
+        cost: totals.cost, calls: totals.calls, pricedCalls: totals.priced,
+        unattributedCalls, tokens: totals.tokens, unattributedTokens: rows.reduce((sum, row) => sum + unattributedTokens(row), 0),
+        truncated: deepseekLimitHit, models: totals.models, error
+      };
+    }
+    const scoped = summarizeUsage(deepseekScope(period, Date.now()));
+    return {
+      id, period,
+      // Account scope is reported alongside the session scope because the balance
+      // it is compared against is account-wide, not per-session.
+      scope: 'Session + other sessions in this ledger',
+      cost: scoped.cost, calls: scoped.calls, pricedCalls: scoped.priced,
+      unattributedCalls, tokens: scoped.tokens,
+      accountTokens: summarizeUsage(rows).tokens,
+      unattributedTokens: rows.reduce((sum, row) => sum + unattributedTokens(row), 0),
+      truncated: deepseekLimitHit, models: scoped.models, error
+    };
   }
   async function priceSession(state, snapshot) {
     if (!snapshot.key) return;
@@ -300,10 +445,24 @@ export function apply(ctx, config = {}) {
       const signal = AbortSignal.any([request.signal, controller.signal]);
       try {
         check(signal);
-        const id = new URL(request.url).searchParams.get('sessionId');
+        const params = new URL(request.url).searchParams;
+        const id = params.get('sessionId'), wantsDeepSeek = params.get('deepseek') === '1';
         if (id !== null && !validSessionId(id)) return json({error:'Invalid session ID'},400);
         await wait(ready, signal);
-        const snapshot = await credentials(signal), data = await account(snapshot);
+        const snapshot = await credentials(signal);
+        if (wantsDeepSeek) {
+          const data = await deepseekAccount(snapshot);
+          // Deliberately not named `deepseek`: that identifier is the ledger Map in
+          // this closure, and shadowing it would report an empty ledger.
+          let tokens = deepseekSummary(null, null, null);
+          if (id) {
+            const error = await scan(id, snapshot.signal);
+            tokens = deepseekSummary(id, params.get('period'), error);
+          }
+          current(snapshot);
+          return json({...data, session:summarizeSession(null,[],costs), deepseek:tokens});
+        }
+        const data = await account(snapshot);
         let session = summarizeSession(null,[],costs);
         if (id) {
           const error = await scan(id, snapshot.signal), state = stateFor(id);
@@ -311,7 +470,7 @@ export function apply(ctx, config = {}) {
           session = summarizeSession(id,[...state.requests.values()],costs,state.missing,error || (state.limited ? 'Local request index limit reached. These totals are incomplete.' : persistError ? 'Local cost cache is unavailable; these figures may need to be recovered after restart.' : null));
         }
         current(snapshot);
-        return json({...data,session});
+        return json({...data, session});
       } catch { return json({error:'Usage could not be refreshed. Check the server connection and retry.'},503); }
       finally { void save(); }
     }
@@ -336,6 +495,29 @@ export function apply(ctx, config = {}) {
       } catch (error) { return json({error:error?.status ? safeError(error) : 'Could not validate or securely store the management key.'},400); }
     })())
   }), 'openrouter: management credential setup');
+  ctx.effect(() => ctx.connection.fetch.register({
+    path:'/api/openrouter-usage/deepseek-key',methods:['POST'],requestBody:'buffered',
+    fetch: request => track((async () => {
+      const signal = AbortSignal.any([request.signal, controller.signal, credentialController.signal]);
+      try {
+        check(signal);
+        const body = await wait(request.text(), signal);
+        if (body.length > 1024) return json({error:'Key is too long.'},400);
+        const key = JSON.parse(body)?.key;
+        // DSH accepts any non-blank key whose characters an HTTP header can carry
+        // and lets the provider judge it, so this matches that rule rather than
+        // assuming a prefix shape and refusing a key DSH itself would accept.
+        if (typeof key !== 'string' || key.length < 8 || key.length > 400 || !/^[\x21-\x7e]+$/.test(key)) return json({error:'Enter a valid DeepSeek API key.'},400);
+        // A 2xx alone proves nothing: readDeepSeek validates a real balance payload,
+        // so a rejected or non-balance response never replaces a stored key.
+        await readDeepSeek(deepseekBaseUrl, key, {signal});
+        check(signal);
+        await ctx.credentials.set(deepseekKeyRef, key);
+        clearCache();
+        return json({ok:true});
+      } catch (error) { return json({error:error?.status ? safeError(error,'DeepSeek') : 'Could not validate or securely store the DeepSeek key.'},400); }
+    })())
+  }), 'openrouter: deepseek credential setup');
   ctx.effect(() => async () => {
     stopped = true; controller.abort(); credentialController.abort();
     await Promise.allSettled([ready, ...work]);

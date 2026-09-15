@@ -1,9 +1,9 @@
 {
   "name": "dsh-openrouter-dashboard",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
-  "description": "Persistent OpenRouter usage and balance panel for DeepSeek Harness",
+  "description": "Persistent OpenRouter and DeepSeek usage and balance panel for DeepSeek Harness",
   "main": "./index.js",
   "exports": { ".": "./index.js", "./client": "./client.js", "./package.json": "./package.json" },
   "dsh": {
@@ -12,10 +12,10 @@
   },
   "license": "MIT",
   "engines": { "node": ">=22.8.0" },
-  "files": ["index.js", "core.js", "client.js", "cordis.patch.yml", "README.md", "SECURITY.md", "LICENSE"],
+  "files": ["index.js", "core.js", "deepseek.js", "client.js", "cordis.patch.yml", "README.md", "SECURITY.md", "LICENSE"],
   "scripts": {
-    "test": "node --test test/client.test.js test/core.test.js test/host.test.js",
-    "check": "node --check index.js && node --check core.js && node --check client.js",
+    "test": "node --test test/client.test.js test/core.test.js test/deepseek.test.js test/host.test.js",
+    "check": "node --check index.js && node --check core.js && node --check deepseek.js && node --check client.js",
     "privacy": "node scripts/privacy-check.mjs"
   }
 }
