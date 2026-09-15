@@ -1,0 +1,35 @@
+# Private runtime and billing data (never publish)
+.data/
+.dsh/
+charges.json
+charges.json.*
+credentials*
+.credentials*
+settings.yaml
+settings.yml
+settings.json
+*.local.*
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local tools, dependencies, generated reports and artifacts
+node_modules/
+.publish-tools/
+coverage/
+*.log
+*.tmp
+*.bak
+*.zip
+*.tgz
+screenshots/
+attachments/
+
+# Editors and OS metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

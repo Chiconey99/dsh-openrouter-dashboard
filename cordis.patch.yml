@@ -1,0 +1,8 @@
+# Optional npm/local Profile Bundle installation.
+- insert:
+    - id: openrouter-dashboard
+      name: dsh-openrouter-dashboard
+      config:
+        provider: openrouter
+        apiKeyRef: OPENROUTER_API_KEY
+        managementKeyRef: OPENROUTER_MANAGEMENT_KEY
