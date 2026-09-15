@@ -141,7 +141,13 @@ Restart the profile and refresh the page. For a manual profile-row installation,
 
 ## Release status
 
-This repository is a private preview until its owner chooses to publish it. No public release or npm publication is configured. A redistribution license has **not yet been selected**; `UNLICENSED` is intentional until that decision is made.
+This repository is a private preview until its owner chooses to publish it. No public release or npm publication is configured. Licensing does not change repository visibility.
+
+## License
+
+[MIT](LICENSE) — Copyright (c) 2026 Chiconey99.
+
+You may use, modify, and redistribute the software, including commercially, provided you retain the copyright and license notice. The software is provided "as is", without warranty. See the full license for its terms.
 
 ## API references
 

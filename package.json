@@ -10,9 +10,9 @@
     "client": { "platform": "web", "inject": ["@deepseek-ai/dsh-client-ui-sidebar"] },
     "bundle": { "patch": "./cordis.patch.yml" }
   },
-  "license": "UNLICENSED",
+  "license": "MIT",
   "engines": { "node": ">=22.8.0" },
-  "files": ["index.js", "core.js", "client.js", "cordis.patch.yml", "README.md", "SECURITY.md"],
+  "files": ["index.js", "core.js", "client.js", "cordis.patch.yml", "README.md", "SECURITY.md", "LICENSE"],
   "scripts": {
     "test": "node --test --test-isolation=none test/client.test.js test/core.test.js test/host.test.js",
     "check": "node --check index.js && node --check core.js && node --check client.js",

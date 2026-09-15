@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 
 export const releaseFiles = [
   '.gitattributes', '.gitignore',
-  'README.md', 'SECURITY.md', 'package.json', 'cordis.patch.yml',
+  'README.md', 'SECURITY.md', 'LICENSE', 'package.json', 'cordis.patch.yml',
   'index.js', 'core.js', 'client.js', 'scripts/privacy-check.mjs',
   'test/client.test.js', 'test/core.test.js', 'test/host.test.js'
 ];
