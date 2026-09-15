@@ -42,7 +42,7 @@ test('session shows partial coverage and only its actual model breakdown',()=>{
 test('home and narrow sidebar remain usable without session data',()=>{
  assert.match(JSON.stringify(render('Session',null,null).tree),/Open a session/);
  const elements=walk(render('Day',data,'session-a',false).tree);
- assert.ok(elements.some(e=>e.props['aria-label']==='OpenRouter usage and balance'));
+ assert.ok(elements.some(e=>e.props['aria-label']==='API usage and balance'));
 });
 
 const text=tree=>tree==null?'':Array.isArray(tree)?tree.map(text).join(' '):typeof tree==='object'?text(tree.children):String(tree);
@@ -193,16 +193,16 @@ test('save errors never echo a server or transport credential',async()=>{
 });
 
 test('collapsed popover focuses close, handles Escape and returns trigger focus',async()=>{
- const app=await loaded({wide:false});const trigger=app.find('OpenRouter usage and balance');
- assert.equal(trigger.props['aria-haspopup'],'dialog');app.click('OpenRouter usage and balance');await app.flush();
+ const app=await loaded({wide:false});const trigger=app.find('API usage and balance');
+ assert.equal(trigger.props['aria-haspopup'],'dialog');app.click('API usage and balance');await app.flush();
  assert.equal(app.focused,'Close OpenRouter usage');
  const dialog=walk(app.tree).find(node=>node.props.role==='dialog');
- assert.equal(app.find('OpenRouter usage and balance').props['aria-controls'],dialog.props.id);
+ assert.equal(app.find('API usage and balance').props['aria-controls'],dialog.props.id);
  const request=await startSave(app);let prevented=false,stopped=false;
  dialog.props.onKeyDown({key:'Escape',preventDefault(){prevented=true;},stopPropagation(){stopped=true;}});await app.flush();
- assert.equal(prevented,true);assert.equal(stopped,true);assert.equal(app.focused,'OpenRouter usage and balance');
+ assert.equal(prevented,true);assert.equal(stopped,true);assert.equal(app.focused,'API usage and balance');
  assert.equal(request.options.signal.aborted,true);assert.ok(!walk(app.tree).some(node=>node.props.role==='dialog'));
- app.click('OpenRouter usage and balance');await app.flush();app.button('Set up account balance');await app.flush();
+ app.click('API usage and balance');await app.flush();app.button('Set up account balance');await app.flush();
  assert.equal(app.find('OpenRouter management key').props.value,'');
  const nextDialog=walk(app.tree).find(node=>node.props.role==='dialog');
  nextDialog.props.onBlur({currentTarget:{contains:()=>false},relatedTarget:{}});await app.flush();

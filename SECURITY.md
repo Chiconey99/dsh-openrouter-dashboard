@@ -43,6 +43,6 @@ The repository includes ignore rules, a package file allowlist, and a heuristic 
 
 ## Reporting a vulnerability
 
-Use GitHub's [private vulnerability reporting form](https://github.com/Chiconey99/dsh-openrouter-dashboard/security/advisories/new) to contact the maintainer privately. Do not open a public issue for a sensitive vulnerability. Include a minimal reproduction with synthetic data, affected versions, and impact; never include working credentials or real account data. If the private reporting form is unavailable, ask for a private contact channel without disclosing vulnerability details.
+Use GitHub's [private vulnerability reporting form](https://github.com/Chiconey99/dsh-usage-dashboard/security/advisories/new) to contact the maintainer privately. Do not open a public issue for a sensitive vulnerability. Include a minimal reproduction with synthetic data, affected versions, and impact; never include working credentials or real account data. If the private reporting form is unavailable, ask for a private contact channel without disclosing vulnerability details.
 
 This early preview has automated tests but has not received an independent security audit.

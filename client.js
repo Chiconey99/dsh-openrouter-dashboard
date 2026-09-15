@@ -1,5 +1,5 @@
 window.__ModuleLoader__.load({
-  id: 'dsh-openrouter-dashboard',
+  id: 'dsh-usage-dashboard',
   factory(require) {
     const React = require('react');
     const h = React.createElement;
@@ -77,7 +77,7 @@ window.__ModuleLoader__.load({
       const partial=isDeepSeek?(ds&&ds.calls>0&&(ds.cost===null||ds.cost===undefined)):period==='Session' && (session?.pending>0 || session?.missing>0 || session?.error);
       const scope=isDeepSeek
         ?(period==='Session'?'This session · locally estimated from recorded tokens':period==='Day'?'Recorded tokens · today (UTC)':'Recorded tokens · Mon–Sun (UTC)')
-        :period==='Session'?'This session · confirmed requests':period==='Day'?'This API key · today (UTC)':period==='Week'?'This API key · Mon–Sun (UTC)':'This API key · all time';
+        :period==='Session'?'OpenRouter · this session':period==='Day'?'OpenRouter · this API key · today (UTC)':period==='Week'?'OpenRouter · this API key · Mon–Sun (UTC)':'OpenRouter · this API key · all time';
       async function saveKey(e) {
         e.preventDefault();if(!mounted.current || saving || !key.trim())return;
         cancelSave();setSaving(true);setSetupMessage('');
@@ -95,7 +95,7 @@ window.__ModuleLoader__.load({
         }finally{clearTimeout(request.timeout);if(isCurrent()){setupAbort.current=null;setSaving(false);}}
 
       }
-      const cardLabel=isDeepSeek?'DeepSeek usage and balance':'OpenRouter usage and balance';
+      const cardLabel=isDeepSeek?'DeepSeek usage and balance':'API usage and balance';
       const brandName=isDeepSeek?'DeepSeek':'OpenRouter';
       const refreshLabel='Refresh '+brandName+' usage';
       const dsModels=ds?.models??[];

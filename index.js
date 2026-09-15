@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { numberOrNull, validGenerationId, validSessionId, keyView, creditView, safeError, readOpenRouter, requestFromEvent, summarizeSession } from './core.js';
 import { PROVIDER as DEEPSEEK_PROVIDER, KEY_REF as DEEPSEEK_KEY_REF, BASE_URL as DEEPSEEK_BASE_URL, readDeepSeek, usageEntry, summarizeUsage, balanceView, periodStart } from './deepseek.js';
 
-export const name = 'openrouter-dashboard';
+export const name = 'usage-dashboard';
 export const inject = ['connection', 'credentials', 'sessions'];
 export function apply(ctx, config = {}) {
   const provider = config.provider || 'openrouter';

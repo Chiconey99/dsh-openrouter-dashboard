@@ -1,4 +1,4 @@
-# OpenRouter & DeepSeek Dashboard for DeepSeek Harness
+# dsh-usage-dashboard
 
 A compact usage and balance card inside the DeepSeek Harness sidebar, with a provider dropdown for **OpenRouter** and the **official DeepSeek API**. Keep an eye on API spending without switching to either provider's dashboard.
 
@@ -33,11 +33,11 @@ The integration was initially validated against the DSH `0.1.5-rc` generation. O
 1. Clone or download this repository to a stable location:
 
    ```sh
-   git clone https://github.com/Chiconey99/dsh-openrouter-dashboard.git
-   cd dsh-openrouter-dashboard
+   git clone https://github.com/Chiconey99/dsh-usage-dashboard.git
+   cd dsh-usage-dashboard
    ```
 
-   **Windows:** with the tested DSH `0.1.5-rc` installer, use a checkout path **without spaces**, for example `C:/dev/dsh-openrouter-dashboard`. Its shell-based pnpm forwarding can split a path containing spaces even when quoted, report success, and create incorrect links. This is an upstream installer limitation; a no-space checkout was verified in an isolated profile.
+   **Windows:** with the tested DSH `0.1.5-rc` installer, use a checkout path **without spaces**, for example `C:/dev/dsh-usage-dashboard`. Its shell-based pnpm forwarding can split a path containing spaces even when quoted, report success, and create incorrect links. This is an upstream installer limitation; a no-space checkout was verified in an isolated profile.
 2. From its root, validate the source:
 
    ```sh
@@ -50,13 +50,13 @@ The integration was initially validated against the DSH `0.1.5-rc` generation. O
 3. Install the local folder into your Web profile, replacing the placeholder with its **absolute path**:
 
    ```sh
-   dsh plugin --profile web add "/absolute/path/to/dsh-openrouter-dashboard"
+   dsh plugin --profile web add "/absolute/path/to/dsh-usage-dashboard"
    ```
 
-   Windows example: `dsh plugin --profile web add C:/dev/dsh-openrouter-dashboard`.
+   Windows example: `dsh plugin --profile web add C:/dev/dsh-usage-dashboard`.
 
 4. Restart that DSH Web profile using your normal launch command, then refresh its existing browser page.
-5. Find **OpenRouter** near the bottom of the left sidebar. Configure the regular key in DSH's Models settings if necessary.
+5. Find the **$** entry near the bottom of the left sidebar. It opens the usage card, which starts on OpenRouter. Configure the regular key in DSH's Models settings if necessary.
 
 Do not install a second copy if you already registered an absolute-path plugin row manually. Keep any folder referenced by a local installation in place. This extension should be installed in the **Host profile**, not in a shipped or per-session agent preset.
 
@@ -77,7 +77,7 @@ config:
 To override them, merge an ID-targeted entry into your profile's own patch file, preserving its existing entries:
 
 ```yaml
-- id: openrouter-dashboard
+- id: usage-dashboard
   config:
     provider: openrouter
     apiKeyRef: OPENROUTER_API_KEY
@@ -193,7 +193,7 @@ Tests use synthetic credentials, request IDs, model names, and amounts. They mak
 ## Remove
 
 ```sh
-dsh plugin --profile web remove dsh-openrouter-dashboard
+dsh plugin --profile web remove dsh-usage-dashboard
 ```
 
 Restart the profile and refresh the page. For a manual profile-row installation, remove only the corresponding row instead. Removing the extension does not automatically delete stored credentials or cached usage data; remove those separately through your deployment's supported tools if desired.
@@ -201,6 +201,21 @@ Restart the profile and refresh the page. For a manual profile-row installation,
 ## Release status
 
 This is an **MIT-licensed public preview**, not a production billing or multi-tenant accounting system. Source is available on GitHub; npm publication remains intentionally disabled through `private: true` in the package manifest. That flag does not restrict GitHub visibility.
+
+### Renamed from `dsh-openrouter-dashboard`
+
+The project was renamed to `dsh-usage-dashboard` when the DeepSeek provider was added, because the old name described only one of the two providers it now tracks. The rename is a **clean break**: there is no compatibility alias for the old name.
+
+If you installed the earlier version, update the references you own:
+
+| Where | Change |
+| --- | --- |
+| Profile patch row | `id: openrouter-dashboard` → `id: usage-dashboard` |
+| Profile patch row | `name: dsh-openrouter-dashboard` → `name: dsh-usage-dashboard` |
+| Local checkout folder | rename it, or update the `file://`/absolute path in the row |
+| `cachePath` | points at your cache; update only if you also moved the checkout |
+
+Existing cached history is keyed inside the cache file, not by the folder name, so a cache carried across the rename keeps working. A profile the loader cannot find fails at startup rather than silently, so a missed reference is visible immediately.
 
 Before filing an issue, read the scope and accuracy limitations above. Include the DSH version, Node version, operating system, and steps to reproduce, but **never keys, real usage caches, session logs, or screenshots with account information**. For security vulnerabilities, follow [SECURITY.md](SECURITY.md) rather than opening a public issue.
 
