@@ -71,11 +71,11 @@ export function apply(ctx, config = {}) {
       state.requests.set(id, {id, model:modelName(model)}); requestCount++; dirty = true;
     }
   }
-  // DeepSeek carries no provider request ids, so its usage rows are keyed by the
-  // call instead: `${sessionId}:${seq}` from a session scan, or `live-${millis}`
-  // from an observed stream. Both keys describe distinct spend, and a rescan
-  // overwrites its own durable key rather than double-counting it. The model is
-  // resolved by the caller (stream options or the preceding `request/header`).
+  // DeepSeek carries no provider request ids, so a usage row is keyed by the event
+  // that recorded it: `${sessionId}#${seq}`. That key is stable across rescans and
+  // restarts, which is what keeps one call counted once. The session scan is the
+  // only caller, so there is no second key space that could double-count a call.
+  // The model comes from the preceding `request/header`.
   function rememberUsage(sessionId, key, time, model, usage) {
     if (!validSessionId(sessionId) || (typeof key !== 'string' && !Number.isSafeInteger(key))) return;
     const entry = usageEntry(time, model, usage);
@@ -231,39 +231,26 @@ export function apply(ctx, config = {}) {
     return join(state.scan, signal);
   }
   // One `llm/stream` tap serves both providers. OpenRouter identifies a request
-  // through `replayState.response.responseId`, which only the pi-ai adapter emits;
-  // DeepSeek reports no request id and instead supplies normalized token usage on a
-  // trailing `usage` chunk, so its spend is recorded from resolved token counts.
+  // through `replayState.response.responseId`, which only the pi-ai adapter emits.
+  // DeepSeek emits no request id at all, so its spend is recorded solely by the
+  // session scan, which reads the `usage` the provider attached to the durable
+  // `assistant/message`. Recording it here as well counted one call twice: the two
+  // keys described the same spend, not two charges.
   ctx.on('llm/stream', (options, next) => {
     const stream = next();
-    const isOpenRouter = options.provider === provider, isDeepSeek = options.provider === DEEPSEEK_PROVIDER;
-    if ((!isOpenRouter && !isDeepSeek) || !validSessionId(options.sessionId)) return stream;
+    if (options.provider !== provider || !validSessionId(options.sessionId)) return stream;
     const sessionId = options.sessionId, model = modelName(options.model);
-    // A stream chunk carries no sequence number or timestamp, so a live DeepSeek
-    // capture is keyed by the observed call instead. The subsequent session scan
-    // records the same call under its durable `session:seq` key; the two keys
-    // simply describe the same spend, which keeps every figure a sum of distinct rows.
-    const record = (id, time, usage) => {
-      if (isDeepSeek) { void track(ready.then(() => { rememberUsage(sessionId, id, time, model, usage); return save(); })).catch(() => {}); return; }
-      if (!validGenerationId(id)) return;
-      // A finish already observed before disposal must survive cache init.
-      void track(ready.then(() => { remember(sessionId, id, model); return save(); })).catch(() => {});
-    };
     return (async function* () {
-      const captured = Date.now();
-      let usage = null, finished = null;
+      let finished = null;
       for await (const chunk of stream) {
-        if (!stopped) {
-          if (isDeepSeek) {
-            // usage precedes finish, but commit only once the stream ends so an
-            // interrupted stream never records tokens the provider never resolved.
-            if (chunk.type === 'usage' && chunk.usage) usage = chunk.usage;
-          } else if (chunk.type === 'finish') finished = chunk;
-        }
+        if (!stopped && chunk.type === 'finish') finished = chunk;
         yield chunk;
       }
-      if (isDeepSeek) { if (usage) record('live-' + captured, captured, usage); }
-      else if (finished) record(finished.replayState?.response?.responseId);
+      const id = finished?.replayState?.response?.responseId;
+      if (validGenerationId(id)) {
+        // A finish already observed before disposal must survive cache init.
+        void track(ready.then(() => { remember(sessionId, id, model); return save(); })).catch(() => {});
+      }
     })();
   }, {global:true});
   function clearCache() {

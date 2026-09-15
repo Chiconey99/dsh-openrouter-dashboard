@@ -388,7 +388,10 @@ test('deepseek peak pricing doubles the off-peak rate for the same call',async()
  }finally{globalThis.fetch=oldFetch;await f.close()}
 });
 
-test('deepseek records live token usage from a stream finish without a request id',async()=>{
+test('a deepseek stream writes no ledger row of its own',async()=>{
+ // DeepSeek emits no request id, so the stream tap cannot key a durable row for it.
+ // It must therefore write nothing: the session scan is the only recorder, and a tap
+ // that also recorded counted one call twice. This pins that contract.
  const oldFetch=globalThis.fetch;
  globalThis.fetch=async()=>Response.json({is_available:true,balance_infos:[{currency:'USD',total_balance:'5.00'}]});
  const f=await fixture([]);
@@ -399,16 +402,37 @@ test('deepseek records live token usage from a stream finish without a request i
    yield {type:'finish',reason:{kind:'stop'}};
   })());
   for await(const chunk of stream)assert.ok(chunk.type);
+  await new Promise(resolve=>setImmediate(resolve));
   const data=await(await deepseekUsage(f,'session-a','Session')).json();
-  assert.equal(data.deepseek.calls,1);
-  assert.equal(data.deepseek.models[0].model,'deepseek-flash');
-  closeTo(data.deepseek.cost,0.15+0.6,'live capture spend');
+  assert.equal(data.deepseek.calls,0,'streaming alone records no spend');
+  assert.equal(data.deepseek.cost,null);
   await f.dispose();
-  // The ledger is durable, so the figure survives a restart.
+  // Nothing was dirtied, so no ledger file is created at all.
+  await assert.rejects(()=>readFile(f.cachePath,'utf8'),/ENOENT/);
+ }finally{globalThis.fetch=oldFetch;await f.close()}
+});
+
+test('one deepseek call is recorded exactly once, by the scan',async()=>{
+ // The durable record is the `assistant/message` usage the scan reads. Priced once,
+ // it must appear once, however many times the log is re-read.
+ const oldFetch=globalThis.fetch;
+ globalThis.fetch=async()=>Response.json({is_available:true,balance_infos:[{currency:'USD',total_balance:'5.00'}]});
+ const off=Date.parse(OFF_PEAK);
+ const events=[header(0,'deepseek-flash'),usageEvent(1,off,{inputTokens:1e6,outputTokens:1e6})];
+ const f=await fixture(events);
+ try{
+  for(let i=0;i<3;i++){
+   const data=await(await deepseekUsage(f,'session-a','Session')).json();
+   assert.equal(data.deepseek.calls,1,'a rescan must not count the call again');
+   closeTo(data.deepseek.cost,0.15+0.6,'single call spend');
+  }
+  await f.dispose();
   const saved=JSON.parse(await readFile(f.cachePath,'utf8'));
   assert.equal(saved.deepseek.length,1);
   assert.equal(saved.deepseek[0].model,'deepseek-flash');
   assert.equal(saved.deepseek[0].outputTokens,1e6);
+  // One call occupies exactly one ledger key, so no second key space can double it.
+  assert.ok(!String(saved.deepseek[0].id).startsWith('live-'),'no second key space for one call');
  }finally{globalThis.fetch=oldFetch;await f.close()}
 });
 
