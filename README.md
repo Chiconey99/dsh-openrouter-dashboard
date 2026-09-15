@@ -17,6 +17,7 @@ A compact usage and balance card inside the DeepSeek Harness sidebar. Keep an ey
 ## Requirements
 
 - Node.js **22.8 or newer** (Node.js 24 recommended).
+- **pnpm on PATH** for DSH's plugin installer. Follow the [pnpm installation guide](https://pnpm.io/installation), then confirm `pnpm --version` works in the shell that launches DSH.
 - A running DeepSeek Harness Web profile and an OpenRouter model route.
 - A regular OpenRouter API key configured through DSH.
 - A separate OpenRouter management key if the credits endpoint requires one.
@@ -25,7 +26,14 @@ The integration was initially validated against the DSH `0.1.5-rc` generation. O
 
 ## Install as a local Profile Bundle
 
-1. Clone or download this repository to a stable location.
+1. Clone or download this repository to a stable location:
+
+   ```sh
+   git clone https://github.com/Chiconey99/dsh-openrouter-dashboard.git
+   cd dsh-openrouter-dashboard
+   ```
+
+   **Windows:** with the tested DSH `0.1.5-rc` installer, use a checkout path **without spaces**, for example `C:/dev/dsh-openrouter-dashboard`. Its shell-based pnpm forwarding can split a path containing spaces even when quoted, report success, and create incorrect links. This is an upstream installer limitation; a no-space checkout was verified in an isolated profile.
 2. From its root, validate the source:
 
    ```sh
@@ -40,6 +48,8 @@ The integration was initially validated against the DSH `0.1.5-rc` generation. O
    ```sh
    dsh plugin --profile web add "/absolute/path/to/dsh-openrouter-dashboard"
    ```
+
+   Windows example: `dsh plugin --profile web add C:/dev/dsh-openrouter-dashboard`.
 
 4. Restart that DSH Web profile using your normal launch command, then refresh its existing browser page.
 5. Find **OpenRouter** near the bottom of the left sidebar. Configure the regular key in DSH's Models settings if necessary.
@@ -69,7 +79,7 @@ To override them, merge an ID-targeted entry into your profile's own patch file,
 
 Fields are **credential reference names**, never literal keys. The configured provider must match the DSH route you want to track. The regular-key resolver falls back to the `llm-pi-ai/<provider>` credential record when the named reference is absent. Users with custom model-route credential references should set `apiKeyRef` explicitly.
 
-An optional `cachePath` sets an absolute file path for the request-cost cache. The default is `.data/charges.json` beside `index.js`; choose a private, writable location. The profile patch format replaces a row's complete configuration, so restate all overrides when editing it.
+An optional `cachePath` sets an absolute file path for the request-cost cache. The default is `.data/charges.json` beside `index.js`; choose a private, writable location. **Use a different cachePath for every concurrently running profile/process. Sharing one cache file between instances is unsupported** and can lose updates despite atomic writes. Do not point it at an existing unrelated file. The profile patch format replaces a row's complete configuration, so restate all overrides when editing it.
 
 ### Set up account balance
 
@@ -100,7 +110,8 @@ Day, Week, and Total include **other applications using the same API key**. Exte
 - Session pricing uses request IDs and OpenRouter's reported charges, **not changes in whole-account balance** or token-price estimates.
 - Captured auxiliary calls attributed to the same session can be included. Child subagent sessions and inherited fork history are excluded.
 - **Partial** means some requests are still waiting for metadata or some historical messages lack usable request IDs. Unknown prices are never treated as zero.
-- Historical backfill processes up to eight metadata requests per refresh with two concurrent lookups and capped retry backoff. Large sessions take several refreshes.
+- Historical backfill processes up to eight metadata requests per refresh with at most two lookups globally. Overlapping refreshes receive pending figures rather than joining an unbounded queue. Rate-limit `Retry-After` is respected; other failures use capped retry backoff. Large sessions take several refreshes.
+- History scanning advances at most 4,096 events per refresh. The local cache is capped at 16 MiB, 10,000 confirmed costs, 1,000 session indexes, and 20,000 retained request IDs. Old cost/session entries can be evicted and recovered; reaching the request-ID cap produces an incomplete-total warning. This is intended for personal usage, not an unlimited billing ledger.
 - Cancelled or failed calls without recorded request IDs cannot be priced. OpenRouter retention and delayed reporting can also leave gaps.
 - Per-model bars are shown only for Session, where attribution is available.
 
@@ -141,7 +152,9 @@ Restart the profile and refresh the page. For a manual profile-row installation,
 
 ## Release status
 
-This repository is a private preview until its owner chooses to publish it. No public release or npm publication is configured. Licensing does not change repository visibility.
+This is an **MIT-licensed public preview**, not a production billing or multi-tenant accounting system. Source is available on GitHub; npm publication remains intentionally disabled through `private: true` in the package manifest. That flag does not restrict GitHub visibility.
+
+Before filing an issue, read the scope and accuracy limitations above. Include the DSH version, Node version, operating system, and steps to reproduce, but **never keys, real usage caches, session logs, or screenshots with account information**. For security vulnerabilities, follow [SECURITY.md](SECURITY.md) rather than opening a public issue.
 
 ## License
 

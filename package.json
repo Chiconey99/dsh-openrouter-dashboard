@@ -1,6 +1,6 @@
 {
   "name": "dsh-openrouter-dashboard",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "type": "module",
   "description": "Persistent OpenRouter usage and balance panel for DeepSeek Harness",
@@ -14,7 +14,7 @@
   "engines": { "node": ">=22.8.0" },
   "files": ["index.js", "core.js", "client.js", "cordis.patch.yml", "README.md", "SECURITY.md", "LICENSE"],
   "scripts": {
-    "test": "node --test --test-isolation=none test/client.test.js test/core.test.js test/host.test.js",
+    "test": "node --test test/client.test.js test/core.test.js test/host.test.js",
     "check": "node --check index.js && node --check core.js && node --check client.js",
     "privacy": "node scripts/privacy-check.mjs"
   }

@@ -20,16 +20,51 @@ export function safeError(error) {
 }
 export async function readOpenRouter(path, key, { fetchImpl = fetch, signal } = {}) {
   if (!key) throw new Error('Missing credential');
+  if (path !== '/key' && path !== '/credits' && !/^\/generation\?id=gen-[A-Za-z0-9_-]{1,200}$/.test(path)) {
+    throw new Error('Unsupported metadata endpoint');
+  }
   const response = await fetchImpl(API + path, {
     headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' },
     redirect: 'error', signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10000)]) : AbortSignal.timeout(10000)
   });
-  if (!response.ok) { const error = new Error('OpenRouter HTTP error'); error.status = response.status; throw error; }
-  // Only these small metadata endpoints are called. Never include remote bodies in error messages.
-  const body = await response.text();
-  if (body.length > 256000) throw new Error('Oversized metadata');
+  if (!response.ok) {
+    const error = new Error('OpenRouter HTTP error');
+    error.status = response.status;
+    const retry = response.headers.get('retry-after');
+    if (retry) {
+      const milliseconds = /^\d+(?:\.\d+)?$/.test(retry) ? Number(retry) * 1000 : Date.parse(retry) - Date.now();
+      if (Number.isFinite(milliseconds) && milliseconds > 0) error.retryAfterMs = milliseconds;
+    }
+    await response.body?.cancel().catch(() => {});
+    throw error;
+  }
+  // Enforce a byte cap while reading, not after an unbounded response.text().
+  // This also bounds bodies without Content-Length and decompressed responses.
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('Missing metadata body');
+  const decoder = new TextDecoder();
+  let bytes = 0, body = '';
+  try {
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > 256000) {
+        await reader.cancel();
+        throw new Error('Oversized metadata');
+      }
+      body += decoder.decode(chunk.value, {stream: true});
+    }
+    body += decoder.decode();
+  } finally { reader.releaseLock(); }
   const value = JSON.parse(body);
-  if (!value?.data || typeof value.data !== 'object') throw new Error('Invalid metadata');
+  if (!value?.data || typeof value.data !== 'object' || Array.isArray(value.data)) throw new Error('Invalid metadata');
+  if (path === '/key' && ['usage', 'usage_daily', 'usage_weekly'].some(field => numberOrNull(value.data[field]) === null)) {
+    throw new Error('Invalid key usage metadata');
+  }
+  if (path === '/credits' && ['total_credits', 'total_usage'].some(field => numberOrNull(value.data[field]) === null)) {
+    throw new Error('Invalid account credit metadata');
+  }
   return value.data;
 }
 export function requestFromEvent(event, provider = 'openrouter') {

@@ -13,11 +13,38 @@ test('unknown data is never shown as zero',()=>{
 });
 test('reads use fixed OpenRouter origin and never leak failed bodies',async()=>{
   let called;
-  const data=await readOpenRouter('/key','secret',{fetchImpl:async(url,options)=>{called={url,options};return new Response('{"data":{"usage":1}}');}});
+  const data=await readOpenRouter('/key','secret',{fetchImpl:async(url,options)=>{called={url,options};return new Response('{"data":{"usage":1,"usage_daily":0,"usage_weekly":1}}');}});
   assert.equal(data.usage,1);assert.equal(called.url,'https://openrouter.ai/api/v1/key');assert.equal(called.options.redirect,'error');
   assert.equal(called.options.headers.Authorization,'Bearer secret');
   try {await readOpenRouter('/credits','secret',{fetchImpl:async()=>new Response('secret',{status:403})});assert.fail();}
   catch(error){assert.equal(error.status,403);assert.ok(!error.message.includes('secret'));assert.match(safeError(error),/management key/);}
+});
+test('metadata validates schema and refuses unsupported paths before sending credentials',async()=>{
+  let called = false;
+  await assert.rejects(readOpenRouter('/other','secret',{fetchImpl:async()=>{called=true;return new Response('{}');}}),/Unsupported/);
+  assert.equal(called,false);
+  for (const data of [[],{}, {usage:'1',usage_daily:0,usage_weekly:0}]) {
+    await assert.rejects(readOpenRouter('/key','secret',{fetchImpl:async()=>Response.json({data})}),/Invalid/);
+  }
+  await assert.rejects(readOpenRouter('/credits','secret',{fetchImpl:async()=>Response.json({data:{total_credits:10}})}),/Invalid/);
+});
+test('streamed metadata enforces its byte limit and cancels oversized bodies',async()=>{
+  let cancelled = false;
+  const body = new ReadableStream({
+    start(controller) { controller.enqueue(new Uint8Array(256001)); },
+    cancel() { cancelled = true; }
+  });
+  await assert.rejects(readOpenRouter('/key','secret',{fetchImpl:async()=>new Response(body)}),/Oversized/);
+  assert.equal(cancelled,true);
+});
+test('rate-limit metadata is sanitized and Retry-After is preserved',async()=>{
+  try {
+    await readOpenRouter('/key','secret',{fetchImpl:async()=>new Response('do not echo this body',{status:429,headers:{'retry-after':'120'}})});
+    assert.fail('Expected rate limit');
+  } catch (error) {
+    assert.equal(error.status,429);assert.equal(error.retryAfterMs,120000);
+    assert.ok(!error.message.includes('echo'));
+  }
 });
 test('session only reads its model provenance and owned leaves',()=>{
   const event={type:'assistant/message',data:{message:{source:{kind:'model',provider:'openrouter',model:'example/model',replayState:{response:{responseId:'gen-abc'}}}}}};

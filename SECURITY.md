@@ -20,7 +20,7 @@ A management key may have broader upstream permissions than this plugin uses. Pr
 
 ## Sensitive local files
 
-`.data/charges.json` stores session identifiers, generation identifiers, model names, and prices. It contains no conversation text or keys, but is sensitive billing metadata. Its directory must be private and writable. The cache is not encrypted. File-mode restrictions are platform dependent, especially on Windows; use appropriate directory ACLs.
+`.data/charges.json` stores session identifiers, generation identifiers, model names, and prices. It contains no conversation text or keys, but is sensitive billing metadata. Its directory must be private and writable. The cache is not encrypted. File-mode restrictions are platform dependent, especially on Windows; use appropriate directory ACLs. Each active profile/process needs its own `cachePath`; sharing a cache file is unsupported and can lose updates. Cached historical charges intentionally survive credential rotation and may describe earlier keys/accounts used by the same trusted deployment. Remove the private cache if you need to discard that history.
 
 Never upload:
 
@@ -33,6 +33,6 @@ The repository includes ignore rules, a package file allowlist, and a heuristic 
 
 ## Reporting a vulnerability
 
-Do not include working credentials or real account data in an issue. While the project is private, contact the repository owner through an existing private channel. Before public release, enable GitHub private vulnerability reporting and choose a documented security contact.
+Use GitHub's [private vulnerability reporting form](https://github.com/Chiconey99/dsh-openrouter-dashboard/security/advisories/new) to contact the maintainer privately. Do not open a public issue for a sensitive vulnerability. Include a minimal reproduction with synthetic data, affected versions, and impact; never include working credentials or real account data. If the private reporting form is unavailable, ask for a private contact channel without disclosing vulnerability details.
 
 This early preview has automated tests but has not received an independent security audit.
